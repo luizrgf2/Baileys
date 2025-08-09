@@ -68,9 +68,13 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	const senderLid = stanza.attrs.sender_lid
 	const participant: string | undefined = stanza.attrs.participant
 	const recipient: string | undefined = stanza.attrs.recipient
+	const meJidDecoded = jidDecode(meId)
+	const meLidDecoded = jidDecode(meLid)
 
 	if(from && from.includes('@s.whatsapp.net') && senderLid) {
 		from = convertLidToLidDevice(from, senderLid)
+	}else if(from && from.includes('@s.whatsapp.net') && from.includes(meJidDecoded?.user as string)) {
+		from = convertLidToLidDevice(from,  `${meLidDecoded?.user}@lid`)
 	}
 
 	const isMe = (jid: string) => areJidsSameUser(jid, meId)

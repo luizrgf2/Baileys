@@ -10,7 +10,8 @@ import {
 	isJidNewsletter,
 	isJidStatusBroadcast,
 	isJidUser,
-	isLidUser
+	isLidUser,
+	jidDecode
 } from '../WABinary'
 import { unpadRandomMax16 } from './generics'
 import type { ILogger } from './logger'
@@ -47,15 +48,30 @@ type MessageType =
  * Decode the received node as a message.
  * @note this will only parse the message, not decrypt it
  */
+
+function convertLidToLidDevice(jid: string, meLid: string): string {
+	const jidDecoded = jidDecode(jid)
+	const lidDecoded = jidDecode(meLid)
+	if (!jidDecoded || !lidDecoded) {
+		throw new Boom('Invalid JID format', { data: { jid } })
+	}
+	return `${lidDecoded.user}:${jidDecoded.device || 0}@lid`
+}
+
 export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: string) {
 	let msgType: MessageType
 	let chatId: string
 	let author: string
 
 	const msgId = stanza.attrs.id
-	const from = stanza.attrs.from
+	let from = stanza.attrs.from
+	const senderLid = stanza.attrs.sender_lid
 	const participant: string | undefined = stanza.attrs.participant
 	const recipient: string | undefined = stanza.attrs.recipient
+
+	if(from && from.includes('@s.whatsapp.net') && senderLid) {
+		from = convertLidToLidDevice(from, senderLid)
+	}
 
 	const isMe = (jid: string) => areJidsSameUser(jid, meId)
 	const isMeLid = (jid: string) => areJidsSameUser(jid, meLid)

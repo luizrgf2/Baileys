@@ -85,7 +85,7 @@ export const xmppPreKey = (pair: KeyPair, id: number): BinaryNode => ({
 	]
 })
 
-export const parseAndInjectE2ESessions = async (node: BinaryNode, repository: SignalRepository) => {
+export const parseAndInjectE2ESessions = async (node: BinaryNode, repository: SignalRepository, mapLids: any ) => {
 	const extractKey = (key: BinaryNode) =>
 		key
 			? {
@@ -113,10 +113,11 @@ export const parseAndInjectE2ESessions = async (node: BinaryNode, repository: Si
 				const key = getBinaryNodeChild(node, 'key')!
 				const identity = getBinaryNodeChildBuffer(node, 'identity')!
 				const jid = node.attrs.jid!
+				const lid = mapLids[jid] || jid // use the mapLids if provided, otherwise use the jid directly
 				const registrationId = getBinaryNodeChildUInt(node, 'registration', 4)
 
 				await repository.injectE2ESession({
-					jid,
+					jid: lid,
 					session: {
 						registrationId: registrationId!,
 						identityKey: generateSignalPubKey(identity),

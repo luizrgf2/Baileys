@@ -49,6 +49,9 @@ import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeGroupsSocket } from './groups'
 import type { NewsletterSocket } from './newsletter'
 import { makeNewsletterSocket } from './newsletter'
+import { SaveLidToCache } from './messages-send/save-lid-to-cache.js'
+import { NormalizeMyJidToLid } from './messages-send/normalize-my-jid-with-device.js'
+import { GetMyLidsAndAnotherLids } from './messages-send/get_my_lids_and_another_lids.js'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -245,15 +248,27 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const assertSessions = async (jids: string[], force: boolean) => {
+		const meJid = authState.creds.me?.id
+		const meLid = authState.creds.me?.lid
+
+		const meLidToValidate = jidDecode(meLid)
+		const lids = [] as string[]
+
+
 		let didFetchNewSession = false
 		let jidsRequiringFetch: string[] = []
 		if (force) {
 			jidsRequiringFetch = jids
 		} else {
-			const addrs = jids.map(jid => signalRepository.jidToSignalProtocolAddress(jid))
+			const addrs = jids.map(jid => {
+				const identitfier = NormalizeMyJidToLid(meJid!, meLid!, jid)
+				return signalRepository.jidToSignalProtocolAddress(identitfier)
+			})
 			const sessions = await authState.keys.get('session', addrs)
 			for (const jid of jids) {
-				const signalId = signalRepository.jidToSignalProtocolAddress(jid)
+				const lidToUse = NormalizeMyJidToLid(meJid!, meLid!, jid)
+				const signalId = signalRepository.jidToSignalProtocolAddress(lidToUse)
+				lids.push(lidToUse)
 				if (!sessions[signalId]) {
 					jidsRequiringFetch.push(jid)
 				}
@@ -261,6 +276,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		if (jidsRequiringFetch.length) {
+			const mapLids = {} as any
 			logger.debug({ jidsRequiringFetch }, 'fetching sessions')
 			const result = await query({
 				tag: 'iq',
@@ -273,19 +289,23 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					{
 						tag: 'key',
 						attrs: {},
-						content: jidsRequiringFetch.map(jid => ({
-							tag: 'user',
-							attrs: { jid }
-						}))
+						content: jidsRequiringFetch.map((jid, index) => {
+							mapLids[jid] = lids[index]
+							const toReturn = {
+								tag: 'user',
+								attrs: {jid}
+							}
+							return toReturn
+						})
 					}
 				]
 			})
-			await parseAndInjectE2ESessions(result, signalRepository)
+			await parseAndInjectE2ESessions(result, signalRepository, mapLids)
 
 			didFetchNewSession = true
 		}
 
-		return didFetchNewSession
+		return lids
 	}
 
 	const sendPeerDataOperationMessage = async (
@@ -372,6 +392,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}: MessageRelayOptions
 	) => {
 		const meId = authState.creds.me!.id
+		const meLid = authState.creds.me!.lid
 
 		let shouldIncludeDeviceIdentity = false
 
@@ -523,9 +544,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}
 					}
 
-					await assertSessions(senderKeyJids, false)
+					const lids = await assertSessions(senderKeyJids, false)
 
-					const result = await createParticipantNodes(senderKeyJids, senderKeyMsg, extraAttrs)
+					const result = await createParticipantNodes(lids, senderKeyMsg, extraAttrs)
 					shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
 
 					participants.push(...result.nodes)
@@ -572,14 +593,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					allJids.push(jid)
 				}
 
-				await assertSessions(allJids, false)
+				const allLids = await assertSessions(allJids, false)
+
+				const {anotherLids, myLids} = GetMyLidsAndAnotherLids(meLid as string, allLids)
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
-					createParticipantNodes(meJids, meMsg, extraAttrs),
-					createParticipantNodes(otherJids, message, extraAttrs)
+					createParticipantNodes(myLids, meMsg, extraAttrs),
+					createParticipantNodes(anotherLids, message, extraAttrs)
 				])
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
@@ -720,6 +743,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return result
 	}
 
+
 	const waUploadToServer = getWAUploadToServer(config, refreshMediaConn)
 
 	const waitForMsgMediaUpdate = bindWaitForEvent(ev, 'messages.media-update')
@@ -787,6 +811,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		},
 		sendMessage: async (jid: string, content: AnyMessageContent, options: MiscMessageGenerationOptions = {}) => {
 			const userJid = authState.creds.me!.id
+
+			const isJid = jid.includes('@s.whatsapp.net')
+			if(isJid)
+				await SaveLidToCache(sock, jid)
+
+
 			if (
 				typeof content === 'object' &&
 				'disappearingMessagesInChat' in content &&
